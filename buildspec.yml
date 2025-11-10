@@ -1,0 +1,79 @@
+version: 0.2
+
+# Batch build configuration with dependency graph for multi-architecture builds
+batch:
+  fast-fail: false
+
+  build-graph:
+    - identifier: build_arm64
+      debug-session: true
+      env:
+        type: ARM_CONTAINER
+        image: aws/codebuild/amazonlinux-aarch64-standard:3.0
+        compute-type: BUILD_GENERAL1_XLARGE
+        privileged-mode: true
+        variables:
+          # DOCKER_BUILDKIT: 1
+          ARCH: arm64
+          PLATFORM: linux/arm64
+      buildspec: platforms/arm64.yml
+
+    - identifier: build_amd64
+      debug-session: true
+      env:
+        type: LINUX_CONTAINER
+        image: aws/codebuild/amazonlinux-x86_64-standard:5.0
+        compute-type: BUILD_GENERAL1_XLARGE
+        privileged-mode: true
+        variables:
+          # DOCKER_BUILDKIT: 1
+          ARCH: amd64
+          PLATFORM: linux/amd64
+      buildspec: platforms/amd64.yml
+
+    - identifier: create_manifest
+      depend-on:
+        - build_amd64
+        - build_arm64
+      # env:
+      #   variables:
+      #     DOCKER_BUILDKIT: 1
+
+# Environment configuration for manifest creation
+env:
+  variables:
+    # DOCKER_BUILDKIT: '1'
+    IMAGE_REPO_NAME: batchbuildgraph
+    IMAGE_TAG: latest
+    AWS_ACCOUNT_ID: 992382390146
+
+phases:
+  pre_build:
+    commands:
+      - timeout 15 sh -c "until docker info; do echo .; sleep 1; done"
+      - echo "Manifest creation phase started on `date`"
+      - echo "Logging in to Amazon ECR..."
+      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+      
+      - echo "Setting up build variables..."
+      - REPOSITORY_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME
+      - echo "Repository URI - $REPOSITORY_URI"
+      
+  build:
+    commands:
+      - echo "Creating multi-architecture manifest..."
+      - docker manifest create $REPOSITORY_URI:$IMAGE_TAG --amend $REPOSITORY_URI:$IMAGE_TAG-amd64 --amend $REPOSITORY_URI:$IMAGE_TAG-arm64
+      - echo "Manifest created successfully"
+      
+  post_build:
+    commands:
+      - echo "Pushing manifest to ECR..."
+      - docker manifest push $REPOSITORY_URI:$IMAGE_TAG
+      - echo "Manifest creation completed on `date`"
+      - echo "Multi-architecture image available at - $REPOSITORY_URI:$IMAGE_TAG"
+      - docker manifest inspect $REPOSITORY_URI:$IMAGE_TAG
+
+# Cache configuration for faster builds
+cache:
+  paths:
+    - '/root/.cache/pip/**/*'
